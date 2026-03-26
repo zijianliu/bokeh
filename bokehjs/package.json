@@ -67,6 +67,8 @@
     "underscore.template": "^0.1.7"
   },
   "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^5.9.3",
     "webpack-glsl-minify": "^1.5.0"
   }
 }
