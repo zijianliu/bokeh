@@ -297,107 +297,19 @@ def gridplot(
             raise ValueError("Cannot provide a nested list when using ncols")
         children = list(_chunks(children, ncols))
 
-    # Additional children set-up for grid plot
     if not children:
         children = []
 
-    # Make the grid
-    toolbars: list[Toolbar] = []
-    items: list[tuple[UIElement, int, int]] = []
+    items, toolbars = _collect_grid_items(children, merge_tools, width, height, sizing_mode)
 
-    for y, row in enumerate(children):
-        for x, item in enumerate(row):
-            if item is None:
-                continue
-            elif isinstance(item, LayoutDOM):
-                if merge_tools:
-                    for plot in item.select(dict(type=Plot)):
-                        toolbars.append(plot.toolbar)
-                        plot.toolbar_location = None
+    toolbar = _create_merged_toolbar(toolbars, toolbar_options, merge_tools)
 
-                if width is not None:
-                    item.width = width
-                if height is not None:
-                    item.height = height
-
-                if sizing_mode is not None and _has_auto_sizing(item):
-                    item.sizing_mode = sizing_mode
-
-                items.append((item, y, x))
-            elif isinstance(item, UIElement):
-                continue
-            else:
-                raise ValueError("Only UIElement and LayoutDOM items can be inserted into a grid")
-
-    def merge(cls: type[Tool], group: list[Tool]) -> Tool | ToolProxy | None:
-        if issubclass(cls, (SaveTool, CopyTool, ExamineTool, FullscreenTool)):
-            return cls()
-        else:
-            return None
-
-    tools: list[Tool | ToolProxy] = []
-
-    for toolbar in toolbars:
-        tools.extend(toolbar.tools)
-
-    if merge_tools:
-        tools = group_tools(tools, merge=merge)
-
-    def map_to_proxy(active_tool: Tool | Literal["auto"] | None) -> ToolProxy | Tool:
-        if isinstance(active_tool, Tool):
-            for tool_or_proxy in tools:
-                if isinstance(tool_or_proxy, ToolProxy) and active_tool in tool_or_proxy.tools:
-                    return tool_or_proxy
-        return active_tool
-
-    logos = [ toolbar.logo for toolbar in toolbars ]
-    autohides = [ toolbar.autohide for toolbar in toolbars ]
-    active_drags = [ map_to_proxy(toolbar.active_drag) for toolbar in toolbars ]
-    active_inspects = [ map_to_proxy(toolbar.active_inspect) for toolbar in toolbars ] # TODO list[Tool]
-    active_scrolls = [ map_to_proxy(toolbar.active_scroll) for toolbar in toolbars ]
-    active_taps = [ map_to_proxy(toolbar.active_tap) for toolbar in toolbars ]
-    active_multis = [ map_to_proxy(toolbar.active_multi) for toolbar in toolbars ]
-
-    V = TypeVar("V")
-    def assert_unique(values: list[V], name: ToolbarOptions) -> V | UndefinedType:
-        if name in toolbar_options:
-            return toolbar_options[name]
-        n = len(set(values))
-        if n == 0:
-            return Undefined
-        elif n > 1:
-            from .util.warnings import warn
-
-            warn(f"found multiple competing values for 'toolbar.{name}' property; using the latest value")
-        return values[-1]
-
-    logo = assert_unique(logos, "logo")
-    autohide = assert_unique(autohides, "autohide")
-    active_drag = assert_unique(active_drags, "active_drag")
-    active_inspect = assert_unique(active_inspects, "active_inspect")
-    active_scroll = assert_unique(active_scrolls, "active_scroll")
-    active_tap = assert_unique(active_taps, "active_tap")
-    active_multi = assert_unique(active_multis, "active_multi")
-
-    toolbar = Toolbar(
-        tools=tools,
-        logo=logo,
-        autohide=autohide,
-        active_drag=active_drag,
-        active_inspect=active_inspect,
-        active_scroll=active_scroll,
-        active_tap=active_tap,
-        active_multi=active_multi,
-    )
-
-    gp = GridPlot(
+    return GridPlot(
         children=items,
         toolbar=toolbar,
         toolbar_location=toolbar_location,
         sizing_mode=sizing_mode,
     )
-
-    return gp
 
 # XXX https://github.com/python/mypy/issues/731
 @overload
@@ -462,137 +374,34 @@ def grid(children: Any = [], sizing_mode: SizingModeType | None = None, nrows: i
        ])
 
     """
-    @dataclass
-    class row:
-        children: list[row | col]
-    @dataclass
-    class col:
-        children: list[row | col]
-
-    @dataclass
-    class Item:
-        layout: LayoutDOM
-        r0: int
-        c0: int
-        r1: int
-        c1: int
-
-    @dataclass
-    class Grid:
-        nrows: int
-        ncols: int
-        items: list[Item]
-
-    def flatten(layout) -> GridBox:
-        def gcd(a: int, b: int) -> int:
-            a, b = abs(a), abs(b)
-            while b != 0:
-                a, b = b, a % b
-            return a
-
-        def lcm(a: int, *rest: int) -> int:
-            for b in rest:
-                a = (a*b) // gcd(a, b)
-            return a
-
-        def nonempty(child: Grid) -> bool:
-            return child.nrows != 0 and child.ncols != 0
-
-        def _flatten(layout: row | col | LayoutDOM) -> Grid:
-            if isinstance(layout, row):
-                children = list(filter(nonempty, map(_flatten, layout.children)))
-                if not children:
-                    return Grid(0, 0, [])
-
-                nrows = lcm(*[ child.nrows for child in children ])
-                ncols = sum(child.ncols for child in children)
-
-                items: list[Item] = []
-                offset = 0
-                for child in children:
-                    factor = nrows//child.nrows
-
-                    for i in child.items:
-                        items.append(Item(i.layout, factor*i.r0, i.c0 + offset, factor*i.r1, i.c1 + offset))
-
-                    offset += child.ncols
-
-                return Grid(nrows, ncols, items)
-            elif isinstance(layout, col):
-                children = list(filter(nonempty, map(_flatten, layout.children)))
-                if not children:
-                    return Grid(0, 0, [])
-
-                nrows = sum(child.nrows for child in children)
-                ncols = lcm(*[ child.ncols for child in children ])
-
-                items = []
-                offset = 0
-                for child in children:
-                    factor = ncols//child.ncols
-
-                    for i in child.items:
-                        items.append(Item(i.layout, i.r0 + offset, factor*i.c0, i.r1 + offset, factor*i.c1))
-
-                    offset += child.nrows
-
-                return Grid(nrows, ncols, items)
-            else:
-                return Grid(1, 1, [Item(layout, 0, 0, 1, 1)])
-
-        grid = _flatten(layout)
-
-        children = []
-        for i in grid.items:
-            if i.layout is not None:
-                children.append((i.layout, i.r0, i.c0, i.r1 - i.r0, i.c1 - i.c0))
-
-        return GridBox(children=children)
-
-    layout: row | col
+    layout: _GridRow | _GridCol | LayoutDOM
     if isinstance(children, list):
         if nrows is not None or ncols is not None:
             N = len(children)
             if ncols is None:
-                ncols = math.ceil(N/nrows)
-            layout = col([ row(children[i:i+ncols]) for i in range(0, N, ncols) ])
+                ncols = math.ceil(N / nrows)
+            layout = _GridCol([_GridRow(children[i:i + ncols]) for i in range(0, N, ncols)])
         else:
-            def traverse(children: list[LayoutDOM], level: int = 0):
-                if isinstance(children, list):
-                    container = col if level % 2 == 0 else row
-                    return container([ traverse(child, level+1) for child in children ])
-                else:
-                    return children
-
-            layout = traverse(children)
+            layout = _traverse_nested_list_to_layout(children)
     elif isinstance(children, LayoutDOM):
-        def is_usable(child: LayoutDOM) -> bool:
-            return _has_auto_sizing(child) and child.spacing == 0
-
-        def traverse(item: LayoutDOM, top_level: bool = False):
-            if isinstance(item, FlexBox) and (top_level or is_usable(item)):
-                container = col if isinstance(item, Column) else row
-                return container(list(map(traverse, item.children)))
-            else:
-                return item
-
-        layout = traverse(children, top_level=True)
+        layout = _traverse_layout_dom_to_layout(children, top_level=True)
     elif isinstance(children, str):
         raise NotImplementedError
     else:
         raise ValueError("expected a list, string or model")
 
-    grid = flatten(layout)
+    grid_layout = _flatten_grid_layout(layout)
+    gridbox = _build_gridbox_from_layout(grid_layout)
 
     if sizing_mode is not None:
-        grid.sizing_mode = sizing_mode
+        gridbox.sizing_mode = sizing_mode
 
-        for child in grid.children:
-            layout = child[0]
-            if _has_auto_sizing(layout):
-                layout.sizing_mode = sizing_mode
+        for child in gridbox.children:
+            child_layout = child[0]
+            if _has_auto_sizing(child_layout):
+                child_layout.sizing_mode = sizing_mode
 
-    return grid
+    return gridbox
 
 #-----------------------------------------------------------------------------
 # Dev API
@@ -658,7 +467,6 @@ def _has_auto_sizing(item: LayoutDOM) -> bool:
 
 L = TypeVar("L", bound=LayoutDOM)
 def _parse_children_arg(*args: L | list[L], children: list[L] | None = None) -> list[L]:
-    # Set-up Children from args or kwargs
     if len(args) > 0 and children is not None:
         raise ValueError("'children' keyword cannot be used with positional arguments")
 
@@ -710,6 +518,233 @@ def _chunks(l: Sequence[I], ncols: int) -> Iterator[Sequence[I]]:
     assert isinstance(ncols, int), "ncols must be an integer"
     for i in range(0, len(l), ncols):
         yield l[i: i + ncols]
+
+def _merge_instantiable_tools(cls: type[Tool], group: list[Tool]) -> Tool | ToolProxy | None:
+    """Merge tools that can be instantiated fresh (SaveTool, CopyTool, etc.)."""
+    if issubclass(cls, (SaveTool, CopyTool, ExamineTool, FullscreenTool)):
+        return cls()
+    return None
+
+def _map_active_tool_to_proxy(active_tool: Tool | Literal["auto"] | None, tools: list[Tool | ToolProxy]) -> ToolProxy | Tool | Literal["auto"] | None:
+    """Map an active tool to its corresponding ToolProxy if it belongs to one."""
+    if isinstance(active_tool, Tool):
+        for tool_or_proxy in tools:
+            if isinstance(tool_or_proxy, ToolProxy) and active_tool in tool_or_proxy.tools:
+                return tool_or_proxy
+    return active_tool
+
+V = TypeVar("V")
+
+def _resolve_unique_toolbar_value(values: list[V], name: ToolbarOptions, toolbar_options: dict[ToolbarOptions, Any]) -> V | UndefinedType:
+    """Resolve a unique value from toolbar options or collected values."""
+    if name in toolbar_options:
+        return toolbar_options[name]
+    n = len(set(values))
+    if n == 0:
+        return Undefined
+    elif n > 1:
+        from .util.warnings import warn
+        warn(f"found multiple competing values for 'toolbar.{name}' property; using the latest value")
+    return values[-1]
+
+def _collect_grid_items(
+    children: list[list[UIElement | None]],
+    merge_tools: bool,
+    width: int | None,
+    height: int | None,
+    sizing_mode: SizingModeType | None,
+) -> tuple[list[tuple[UIElement, int, int]], list[Toolbar]]:
+    """Collect grid items and their toolbars from children."""
+    toolbars: list[Toolbar] = []
+    items: list[tuple[UIElement, int, int]] = []
+
+    for y, row in enumerate(children):
+        for x, item in enumerate(row):
+            if item is None:
+                continue
+            elif isinstance(item, LayoutDOM):
+                if merge_tools:
+                    for plot in item.select(dict(type=Plot)):
+                        toolbars.append(plot.toolbar)
+                        plot.toolbar_location = None
+
+                if width is not None:
+                    item.width = width
+                if height is not None:
+                    item.height = height
+
+                if sizing_mode is not None and _has_auto_sizing(item):
+                    item.sizing_mode = sizing_mode
+
+                items.append((item, y, x))
+            elif isinstance(item, UIElement):
+                continue
+            else:
+                raise ValueError("Only UIElement and LayoutDOM items can be inserted into a grid")
+
+    return items, toolbars
+
+def _create_merged_toolbar(
+    toolbars: list[Toolbar],
+    toolbar_options: dict[ToolbarOptions, Any],
+    merge_tools: bool,
+) -> Toolbar:
+    """Create a merged toolbar from multiple toolbars."""
+    tools: list[Tool | ToolProxy] = []
+    for toolbar in toolbars:
+        tools.extend(toolbar.tools)
+
+    if merge_tools:
+        tools = group_tools(tools, merge=_merge_instantiable_tools)
+
+    logos = [toolbar.logo for toolbar in toolbars]
+    autohides = [toolbar.autohide for toolbar in toolbars]
+    active_drags = [_map_active_tool_to_proxy(toolbar.active_drag, tools) for toolbar in toolbars]
+    active_inspects = [_map_active_tool_to_proxy(toolbar.active_inspect, tools) for toolbar in toolbars]
+    active_scrolls = [_map_active_tool_to_proxy(toolbar.active_scroll, tools) for toolbar in toolbars]
+    active_taps = [_map_active_tool_to_proxy(toolbar.active_tap, tools) for toolbar in toolbars]
+    active_multis = [_map_active_tool_to_proxy(toolbar.active_multi, tools) for toolbar in toolbars]
+
+    logo = _resolve_unique_toolbar_value(logos, "logo", toolbar_options)
+    autohide = _resolve_unique_toolbar_value(autohides, "autohide", toolbar_options)
+    active_drag = _resolve_unique_toolbar_value(active_drags, "active_drag", toolbar_options)
+    active_inspect = _resolve_unique_toolbar_value(active_inspects, "active_inspect", toolbar_options)
+    active_scroll = _resolve_unique_toolbar_value(active_scrolls, "active_scroll", toolbar_options)
+    active_tap = _resolve_unique_toolbar_value(active_taps, "active_tap", toolbar_options)
+    active_multi = _resolve_unique_toolbar_value(active_multis, "active_multi", toolbar_options)
+
+    return Toolbar(
+        tools=tools,
+        logo=logo,
+        autohide=autohide,
+        active_drag=active_drag,
+        active_inspect=active_inspect,
+        active_scroll=active_scroll,
+        active_tap=active_tap,
+        active_multi=active_multi,
+    )
+
+@dataclass
+class _GridRow:
+    """Internal representation of a row in grid layout."""
+    children: list[_GridRow | _GridCol]
+
+@dataclass
+class _GridCol:
+    """Internal representation of a column in grid layout."""
+    children: list[_GridRow | _GridCol]
+
+@dataclass
+class _GridItem:
+    """Internal representation of an item in grid layout."""
+    layout: LayoutDOM
+    r0: int
+    c0: int
+    r1: int
+    c1: int
+
+@dataclass
+class _GridLayout:
+    """Internal representation of a computed grid layout."""
+    nrows: int
+    ncols: int
+    items: list[_GridItem]
+
+def _gcd(a: int, b: int) -> int:
+    """Compute greatest common divisor."""
+    a, b = abs(a), abs(b)
+    while b != 0:
+        a, b = b, a % b
+    return a
+
+def _lcm(a: int, *rest: int) -> int:
+    """Compute least common multiple."""
+    for b in rest:
+        a = (a * b) // _gcd(a, b)
+    return a
+
+def _is_nonempty_grid(child: _GridLayout) -> bool:
+    """Check if a grid layout has content."""
+    return child.nrows != 0 and child.ncols != 0
+
+def _flatten_row_layout(layout: _GridRow) -> _GridLayout:
+    """Flatten a row layout into a grid."""
+    children = list(filter(_is_nonempty_grid, map(_flatten_grid_layout, layout.children)))
+    if not children:
+        return _GridLayout(0, 0, [])
+
+    nrows = _lcm(*[child.nrows for child in children])
+    ncols = sum(child.ncols for child in children)
+
+    items: list[_GridItem] = []
+    offset = 0
+    for child in children:
+        factor = nrows // child.nrows
+        for i in child.items:
+            items.append(_GridItem(
+                i.layout, factor * i.r0, i.c0 + offset, factor * i.r1, i.c1 + offset
+            ))
+        offset += child.ncols
+
+    return _GridLayout(nrows, ncols, items)
+
+def _flatten_col_layout(layout: _GridCol) -> _GridLayout:
+    """Flatten a column layout into a grid."""
+    children = list(filter(_is_nonempty_grid, map(_flatten_grid_layout, layout.children)))
+    if not children:
+        return _GridLayout(0, 0, [])
+
+    nrows = sum(child.nrows for child in children)
+    ncols = _lcm(*[child.ncols for child in children])
+
+    items: list[_GridItem] = []
+    offset = 0
+    for child in children:
+        factor = ncols // child.ncols
+        for i in child.items:
+            items.append(_GridItem(
+                i.layout, i.r0 + offset, factor * i.c0, i.r1 + offset, factor * i.c1
+            ))
+        offset += child.nrows
+
+    return _GridLayout(nrows, ncols, items)
+
+def _flatten_grid_layout(layout: _GridRow | _GridCol | LayoutDOM) -> _GridLayout:
+    """Recursively flatten a layout structure into a grid."""
+    if isinstance(layout, _GridRow):
+        return _flatten_row_layout(layout)
+    elif isinstance(layout, _GridCol):
+        return _flatten_col_layout(layout)
+    else:
+        return _GridLayout(1, 1, [_GridItem(layout, 0, 0, 1, 1)])
+
+def _build_gridbox_from_layout(grid: _GridLayout) -> GridBox:
+    """Build a GridBox from a flattened layout."""
+    children = []
+    for i in grid.items:
+        if i.layout is not None:
+            children.append((i.layout, i.r0, i.c0, i.r1 - i.r0, i.c1 - i.c0))
+    return GridBox(children=children)
+
+def _traverse_nested_list_to_layout(children: list[LayoutDOM], level: int = 0) -> _GridRow | _GridCol | LayoutDOM:
+    """Convert a nested list structure to internal layout representation."""
+    if isinstance(children, list):
+        container = _GridCol if level % 2 == 0 else _GridRow
+        return container([_traverse_nested_list_to_layout(child, level + 1) for child in children])
+    else:
+        return children
+
+def _is_layout_usable_for_grid(child: LayoutDOM) -> bool:
+    """Check if a layout DOM is usable for grid traversal."""
+    return _has_auto_sizing(child) and child.spacing == 0
+
+def _traverse_layout_dom_to_layout(item: LayoutDOM, top_level: bool = False) -> _GridRow | _GridCol | LayoutDOM:
+    """Convert a LayoutDOM structure to internal layout representation."""
+    if isinstance(item, FlexBox) and (top_level or _is_layout_usable_for_grid(item)):
+        container = _GridCol if isinstance(item, Column) else _GridRow
+        return container(list(map(lambda c: _traverse_layout_dom_to_layout(c), item.children)))
+    else:
+        return item
 
 #-----------------------------------------------------------------------------
 # Code
