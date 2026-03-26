@@ -14,7 +14,20 @@ import {isNumber, isString, isArray, isArrayOf, isPlainObject} from "../core/uti
 import {enumerate} from "core/util/iterator"
 import * as nd from "core/util/ndarray"
 
-import type {Glyph, Scale, Plot, Toolbar} from "./models"
+// 辅助函数：分离属性名中的特征和特质部分
+function _split_feature_trait(ft: string): [string, string] {
+  const fta: string[] = ft.split("_", 2)
+  return fta.length == 2 ? [fta[0], fta[1]] : [fta[0], ""]
+}
+
+// 辅助函数：判断属性是否为视觉属性
+function _is_visual(ft: string): boolean {
+  const [feature, trait] = _split_feature_trait(ft)
+  return includes(["line", "fill", "hatch", "text", "global"], feature) && trait !== ""
+}
+
+import type {Glyph, Scale, Plot, Toolbar, CDSView} from "./models"
+import type {RenderLevel} from "../core/enums"
 import {
   Axis,
   CategoricalAxis,
@@ -361,31 +374,24 @@ export class Figure extends BaseFigure {
   _pop_visuals(cls: Class<HasProps>, props: Attrs, prefix: string = "",
       defaults: Attrs = {}, override_defaults: Attrs = {}): Attrs {
 
-    const _split_feature_trait = function(ft: string): string[] {
-      const fta: string[] = ft.split("_", 2)
-      return fta.length == 2 ? fta : fta.concat([""])
-    }
-    const _is_visual = function(ft: string): boolean {
-      const [feature, trait] = _split_feature_trait(ft)
-      return includes(["line", "fill", "hatch", "text", "global"], feature) && trait !== ""
-    }
-
-    defaults = {...defaults}
+    const merged_defaults = {...defaults}
     const trait_defaults: Attrs = {}
 
     const props_proxy = dict(props)
     const prototype_props_proxy = dict(cls.prototype._props)
-    const defaults_proxy = dict(defaults)
+    const defaults_proxy = dict(merged_defaults)
     const trait_defaults_proxy = dict(trait_defaults)
     const override_defaults_proxy = dict(override_defaults)
 
+    // 设置默认颜色值
     if (!defaults_proxy.has("text_color")) {
-      defaults.text_color = "black"
+      merged_defaults.text_color = "black"
     }
     if (!defaults_proxy.has("hatch_color")) {
-      defaults.hatch_color = "black"
+      merged_defaults.hatch_color = "black"
     }
 
+    // 设置特质级别的默认值
     if (!trait_defaults_proxy.has("color")) {
       trait_defaults.color = _default_color
     }
@@ -394,10 +400,12 @@ export class Figure extends BaseFigure {
     }
 
     const result: Attrs = {}
-    const traits = new Set()
+    const traits_to_cleanup = new Set<string>()
+
     for (const pname of keys(cls.prototype._props)) {
       if (_is_visual(pname)) {
-        const trait = _split_feature_trait(pname)[1]
+        const [, trait] = _split_feature_trait(pname)
+
         if (props_proxy.has(prefix + pname)) {
           result[pname] = props[prefix + pname]
           delete props[prefix + pname]
@@ -406,18 +414,20 @@ export class Figure extends BaseFigure {
         } else if (override_defaults_proxy.has(trait)) {
           result[pname] = override_defaults[trait]
         } else if (defaults_proxy.has(pname)) {
-          result[pname] = defaults[pname]
+          result[pname] = merged_defaults[pname]
         } else if (trait_defaults_proxy.has(trait)) {
           result[pname] = trait_defaults[trait]
         }
+
         if (!prototype_props_proxy.has(trait)) {
-          traits.add(trait)
+          traits_to_cleanup.add(trait)
         }
       }
     }
 
-    for (const name of traits) {
-      delete props[prefix + name]
+    // 清理已经处理过的特质属性
+    for (const trait of traits_to_cleanup) {
+      delete props[prefix + trait]
     }
 
     return result
@@ -486,14 +496,75 @@ export class Figure extends BaseFigure {
     return `the method signature is ${method}(${positional.join(", ")}, args?)`
   }
 
-  _glyph<G extends Glyph>(cls: Class<G>, method: string, positional: NamesOf<G>, args: unknown[], overrides: object = {}): GlyphRenderer<G> {
-    let attrs: Attrs & Partial<AuxGlyph>
+  // 解析并验证 glyph 数据源
+  private _resolve_glyph_data_source(attrs: Partial<AuxGlyph>): ColumnarDataSource {
+    const {source} = attrs
+    if (source == null) {
+      return new ColumnDataSource()
+    } else if (source instanceof ColumnarDataSource) {
+      return source
+    } else {
+      return new ColumnDataSource({data: source})
+    }
+  }
 
+  // 提取 glyph 属性中的辅助属性（图例、渲染属性等）
+  private _extract_glyph_attributes(attrs: Attrs & Partial<AuxGlyph>): {
+    view: CDSView | undefined
+    legend_props: {
+      legend: unknown
+      legend_label: string | undefined
+      legend_field: string | undefined
+      legend_group: string | undefined
+    }
+    render_props: {
+      name: string | undefined
+      level: RenderLevel | undefined
+      visible: boolean | undefined
+      x_range_name: string | undefined
+      y_range_name: string | undefined
+      coordinates: CoordinateMapping | null | undefined
+    }
+  } {
+    const {
+      legend, legend_label, legend_field, legend_group,
+      name, level, visible, x_range_name, y_range_name, coordinates,
+      view
+    } = attrs
+
+    // 清理已提取的属性
+    delete attrs.legend
+    delete attrs.legend_label
+    delete attrs.legend_field
+    delete attrs.legend_group
+    delete attrs.name
+    delete attrs.level
+    delete attrs.visible
+    delete attrs.x_range_name
+    delete attrs.y_range_name
+    delete attrs.coordinates
+    delete attrs.view
+
+    // 验证图例参数互斥性
+    const legend_args_count = [legend, legend_label, legend_field, legend_group].filter(arg => arg != null).length
+    if (legend_args_count > 1) {
+      throw new Error("only one of legend, legend_label, legend_field, legend_group can be specified")
+    }
+
+    return {
+      view,
+      legend_props: {legend, legend_label, legend_field, legend_group},
+      render_props: {name, level, visible, x_range_name, y_range_name, coordinates}
+    }
+  }
+
+  // 解析 glyph 方法的参数
+  private _parse_glyph_args<G extends Glyph>(method: string, positional: NamesOf<G>, args: unknown[]): Attrs & Partial<AuxGlyph> {
     const n_args = args.length
     const n_pos = positional.length
 
     if (n_args == n_pos || n_args == n_pos + 1) {
-      attrs = {}
+      const attrs: Attrs & Partial<AuxGlyph> = {}
 
       for (const [[param, arg], i] of enumerate(zip(positional, args))) {
         if (isPlainObject(arg) && !isVectorized(arg)) {
@@ -508,108 +579,141 @@ export class Figure extends BaseFigure {
         if (!isPlainObject(opts) || isVectorized(opts)) {
           throw new Error(`expected optional arguments; ${this._signature(method, positional)}`)
         } else {
-          attrs = {...attrs, ...args[args.length - 1] as Attrs}
+          Object.assign(attrs, opts as Attrs)
         }
       }
+
+      return attrs
     } else if (n_args == 0) {
-      attrs = {}
+      return {}
     } else if (n_args == 1) {
-      attrs = {...args[0] as Attrs}
+      return {...args[0] as Attrs}
     } else {
       throw new Error(`wrong number of arguments; ${this._signature(method, positional)}`)
     }
+  }
 
+  _glyph<G extends Glyph>(cls: Class<G>, method: string, positional: NamesOf<G>, args: unknown[], overrides: object = {}): GlyphRenderer<G> {
+    let attrs = this._parse_glyph_args(method, positional, args)
     attrs = {...attrs, ...overrides}
 
-    const source = (() => {
-      const {source} = attrs
-      if (source == null) {
-        return new ColumnDataSource()
-      } else if (source instanceof ColumnarDataSource) {
-        return source
-      } else {
-        return new ColumnDataSource({data: source})
-      }
-    })()
+    const source = this._resolve_glyph_data_source(attrs)
     const data = clone(source.data)
     delete attrs.source
 
-    const {view} = attrs
-    delete attrs.view
+    const {view, legend_props, render_props} = this._extract_glyph_attributes(attrs)
 
-    const legend = attrs.legend
-    delete attrs.legend
-    const legend_label = attrs.legend_label
-    delete attrs.legend_label
-    const legend_field = attrs.legend_field
-    delete attrs.legend_field
-    const legend_group = attrs.legend_group
-    delete attrs.legend_group
+    // 处理各种状态下的视觉属性
+    const glyph_states = this._compute_glyph_states(cls, attrs)
 
-    if ([legend, legend_label, legend_field, legend_group].filter((arg) => arg != null).length > 1) {
-      throw new Error("only one of legend, legend_label, legend_field, legend_group can be specified")
-    }
-
-    const name = attrs.name
-    delete attrs.name
-
-    const level = attrs.level
-    delete attrs.level
-
-    const visible = attrs.visible
-    delete attrs.visible
-
-    const x_range_name = attrs.x_range_name
-    delete attrs.x_range_name
-
-    const y_range_name = attrs.y_range_name
-    delete attrs.y_range_name
-
-    const coordinates = attrs.coordinates
-    delete attrs.coordinates
-
-    const glyph_ca  = this._pop_visuals(cls, attrs)
-    const nglyph_ca = this._pop_visuals(cls, attrs, "nonselection_", glyph_ca, {alpha: 0.1})
-    const sglyph_ca = this._pop_visuals(cls, attrs, "selection_", glyph_ca)
-    const hglyph_ca = this._pop_visuals(cls, attrs, "hover_", glyph_ca)
-    const mglyph_ca = this._pop_visuals(cls, attrs, "muted_", glyph_ca, {alpha: 0.2})
-
-    const data_dict = dict(data)
-    this._fixup_values(cls, data_dict,  glyph_ca)
-    this._fixup_values(cls, data_dict, nglyph_ca)
-    this._fixup_values(cls, data_dict, sglyph_ca)
-    this._fixup_values(cls, data_dict, hglyph_ca)
-    this._fixup_values(cls, data_dict, mglyph_ca)
-
-    this._fixup_values(cls, data_dict, attrs)
+    // 规范化数据值
+    this._fixup_glyph_values(cls, dict(data), attrs, glyph_states)
 
     source.data = data
 
-    const _make_glyph = (cls: Class<Glyph>, attrs: Attrs, extra_attrs: Attrs) => {
-      return new cls({...attrs, ...extra_attrs})
+    // 创建各种状态下的 glyph
+    const glyphs = this._create_glyph_variants(cls, attrs, glyph_states)
+
+    // 创建 glyph 渲染器
+    const glyph_renderer = this._create_glyph_renderer(source, view, glyphs, render_props)
+
+    // 处理图例
+    this._handle_legend(legend_props, glyph_renderer)
+
+    this.add_renderers(glyph_renderer)
+    return glyph_renderer as GlyphRenderer<G>
+  }
+
+  // 计算 glyph 在不同状态下的视觉属性
+  private _compute_glyph_states<G extends Glyph>(cls: Class<G>, attrs: Attrs): {
+    base: Attrs
+    nonselection: Attrs
+    selection: Attrs
+    hover: Attrs
+    muted: Attrs
+  } {
+    const base = this._pop_visuals(cls, attrs)
+    const nonselection = this._pop_visuals(cls, attrs, "nonselection_", base, {alpha: 0.1})
+    const selection = this._pop_visuals(cls, attrs, "selection_", base)
+    const hover = this._pop_visuals(cls, attrs, "hover_", base)
+    const muted = this._pop_visuals(cls, attrs, "muted_", base, {alpha: 0.2})
+
+    return {base, nonselection, selection, hover, muted}
+  }
+
+  // 规范化 glyph 的数据值
+  private _fixup_glyph_values(cls: Class<HasProps>, data_dict: Map<string, unknown>, base_attrs: Attrs,
+      states: {base: Attrs, nonselection: Attrs, selection: Attrs, hover: Attrs, muted: Attrs}): void {
+    this._fixup_values(cls, data_dict, states.base)
+    this._fixup_values(cls, data_dict, states.nonselection)
+    this._fixup_values(cls, data_dict, states.selection)
+    this._fixup_values(cls, data_dict, states.hover)
+    this._fixup_values(cls, data_dict, states.muted)
+    this._fixup_values(cls, data_dict, base_attrs)
+  }
+
+  // 创建 glyph 对象
+  private _create_glyph<G extends Glyph>(cls: Class<G>, base_attrs: Attrs, visual_attrs: Attrs): G {
+    return new cls({...base_attrs, ...visual_attrs})
+  }
+
+  // 创建不同交互状态下的 glyph 变体
+  private _create_glyph_variants<G extends Glyph>(cls: Class<G>, attrs: Attrs,
+      states: {base: Attrs, nonselection: Attrs, selection: Attrs, hover: Attrs, muted: Attrs}): {
+    glyph: G
+    nonselection_glyph: G | "auto"
+    selection_glyph: G | "auto"
+    hover_glyph: G | undefined
+    muted_glyph: G | "auto"
+  } {
+    const glyph = this._create_glyph(cls, attrs, states.base)
+    const nonselection_glyph = !is_empty(states.nonselection) ? this._create_glyph(cls, attrs, states.nonselection) : "auto"
+    const selection_glyph = !is_empty(states.selection) ? this._create_glyph(cls, attrs, states.selection) : "auto"
+    const hover_glyph = !is_empty(states.hover) ? this._create_glyph(cls, attrs, states.hover) : undefined
+    const muted_glyph = !is_empty(states.muted) ? this._create_glyph(cls, attrs, states.muted) : "auto"
+
+    return {glyph, nonselection_glyph, selection_glyph, hover_glyph, muted_glyph}
+  }
+
+  // 创建 GlyphRenderer
+  private _create_glyph_renderer<G extends Glyph>(
+    source: ColumnarDataSource,
+    view: CDSView | undefined,
+    glyphs: {
+      glyph: G
+      nonselection_glyph: G | "auto"
+      selection_glyph: G | "auto"
+      hover_glyph: G | undefined
+      muted_glyph: G | "auto"
+    },
+    render_props: {
+      name: string | undefined
+      level: RenderLevel | undefined
+      visible: boolean | undefined
+      x_range_name: string | undefined
+      y_range_name: string | undefined
+      coordinates: CoordinateMapping | null | undefined
     }
-
-    const glyph  = _make_glyph(cls, attrs, glyph_ca)
-    const nglyph = !is_empty(nglyph_ca) ? _make_glyph(cls, attrs, nglyph_ca) : "auto"
-    const sglyph = !is_empty(sglyph_ca) ? _make_glyph(cls, attrs, sglyph_ca) : "auto"
-    const hglyph = !is_empty(hglyph_ca) ? _make_glyph(cls, attrs, hglyph_ca) : undefined
-    const mglyph = !is_empty(mglyph_ca) ? _make_glyph(cls, attrs, mglyph_ca) : "auto"
-
-    const glyph_renderer = new GlyphRenderer({
-      data_source:        source,
+  ): GlyphRenderer<G> {
+    return new GlyphRenderer({
+      data_source: source,
       view,
-      glyph,
-      nonselection_glyph: nglyph,
-      selection_glyph:    sglyph,
-      hover_glyph:        hglyph,
-      muted_glyph:        mglyph,
-      name,
-      level,
-      visible,
-      x_range_name,
-      y_range_name,
-      coordinates,
+      ...glyphs,
+      ...render_props
     })
+  }
+
+  // 统一处理图例
+  private _handle_legend(
+    legend_props: {
+      legend: unknown
+      legend_label: string | undefined
+      legend_field: string | undefined
+      legend_group: string | undefined
+    },
+    glyph_renderer: GlyphRenderer<Glyph>
+  ): void {
+    const {legend_label, legend_field, legend_group} = legend_props
 
     if (legend_label != null) {
       this._handle_legend_label(legend_label, this.legend, glyph_renderer)
@@ -620,9 +724,6 @@ export class Figure extends BaseFigure {
     if (legend_group != null) {
       this._handle_legend_group(legend_group, this.legend, glyph_renderer)
     }
-
-    this.add_renderers(glyph_renderer)
-    return glyph_renderer as GlyphRenderer<G>
   }
 
   static _get_range(range?: Range | [number, number] | ArrayLike<string>): Range {
