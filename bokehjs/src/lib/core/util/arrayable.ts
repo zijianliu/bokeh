@@ -294,7 +294,10 @@ export function min_by<T>(array: Arrayable<T>, key: (item: T, i: number) => numb
   for (let i = 1, length = array.length; i < length; i++) {
     const value = array[i]
     const computed = key(value, i)
-    if (computed < result_computed) {
+    if (isNaN(result_computed) && !isNaN(computed)) {
+      result = value
+      result_computed = computed
+    } else if (computed < result_computed) {
       result = value
       result_computed = computed
     }
@@ -314,7 +317,10 @@ export function max_by<T>(array: Arrayable<T>, key: (item: T, i: number) => numb
   for (let i = 1, length = array.length; i < length; i++) {
     const value = array[i]
     const computed = key(value, i)
-    if (computed > result_computed) {
+    if (isNaN(result_computed) && !isNaN(computed)) {
+      result = value
+      result_computed = computed
+    } else if (computed > result_computed) {
       result = value
       result_computed = computed
     }
