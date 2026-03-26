@@ -196,23 +196,53 @@ class figure(Plot, GlyphAPI):
 
     def __init__(self, *arg, **kw) -> None:
         opts = FigureOptions(kw)
+        self._validate_kwargs(kw, opts)
+        super().__init__(*arg, **kw)
+        self._setup_ranges(opts)
+        self._setup_scales(opts)
+        self._setup_axes_and_grids(opts)
+        self._setup_tools(opts)
 
+    def _validate_kwargs(self, kw: dict[str, Any], opts: FigureOptions) -> None:
+        """Validate that all kwargs are valid properties for this figure."""
         names = self.properties()
         for name in kw.keys():
             if name not in names:
                 self._raise_attribute_error_with_matches(name, names | opts.properties())
 
-        super().__init__(*arg, **kw)
-
+    def _setup_ranges(self, opts: FigureOptions) -> None:
+        """Set up x and y ranges for the figure."""
         self.x_range = get_range(opts.x_range)
         self.y_range = get_range(opts.y_range)
 
+    def _setup_scales(self, opts: FigureOptions) -> None:
+        """Set up x and y scales based on ranges and axis types."""
         self.x_scale = get_scale(self.x_range, opts.x_axis_type)
         self.y_scale = get_scale(self.y_range, opts.y_axis_type)
 
-        process_axis_and_grid(self, opts.x_axis_type, opts.x_axis_location, opts.x_minor_ticks, opts.x_axis_label, self.x_range, 0)
-        process_axis_and_grid(self, opts.y_axis_type, opts.y_axis_location, opts.y_minor_ticks, opts.y_axis_label, self.y_range, 1)
+    def _setup_axes_and_grids(self, opts: FigureOptions) -> None:
+        """Set up axes and grids for both dimensions."""
+        process_axis_and_grid(
+            self,
+            opts.x_axis_type,
+            opts.x_axis_location,
+            opts.x_minor_ticks,
+            opts.x_axis_label,
+            self.x_range,
+            dim=0,
+        )
+        process_axis_and_grid(
+            self,
+            opts.y_axis_type,
+            opts.y_axis_location,
+            opts.y_minor_ticks,
+            opts.y_axis_label,
+            self.y_range,
+            dim=1,
+        )
 
+    def _setup_tools(self, opts: FigureOptions) -> None:
+        """Set up tools and active tool states for the figure."""
         tool_objs, tool_map = process_tools_arg(self, opts.tools, opts.tooltips)
         self.add_tools(*tool_objs)
         process_active_tools(

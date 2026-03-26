@@ -284,12 +284,10 @@ def gridplot(
             )
 
     '''
-    if toolbar_options is None:
-        toolbar_options = {}
+    toolbar_options = toolbar_options or {}
 
-    if toolbar_location:
-        if not hasattr(Location, toolbar_location):
-            raise ValueError(f"Invalid value of toolbar_location: {toolbar_location}")
+    if toolbar_location and not hasattr(Location, toolbar_location):
+        raise ValueError(f"Invalid value of toolbar_location: {toolbar_location}")
 
     children = _parse_children_arg(children=children)
     if ncols:
@@ -297,11 +295,31 @@ def gridplot(
             raise ValueError("Cannot provide a nested list when using ncols")
         children = list(_chunks(children, ncols))
 
-    # Additional children set-up for grid plot
-    if not children:
-        children = []
+    children = children or []
 
-    # Make the grid
+    toolbars, items = _collect_grid_items(children, sizing_mode, width, height, merge_tools)
+    toolbar = _create_merged_toolbar(toolbars, toolbar_options, merge_tools)
+
+    return GridPlot(
+        children=items,
+        toolbar=toolbar,
+        toolbar_location=toolbar_location,
+        sizing_mode=sizing_mode,
+    )
+
+
+def _collect_grid_items(
+    children: list[list[UIElement | None]],
+    sizing_mode: SizingModeType | None,
+    width: int | None,
+    height: int | None,
+    merge_tools: bool,
+) -> tuple[list[Toolbar], list[tuple[UIElement, int, int]]]:
+    """Collect toolbars and layout items from grid children.
+
+    Returns:
+        Tuple of (list of toolbars, list of grid items with positions)
+    """
     toolbars: list[Toolbar] = []
     items: list[tuple[UIElement, int, int]] = []
 
@@ -315,89 +333,114 @@ def gridplot(
                         toolbars.append(plot.toolbar)
                         plot.toolbar_location = None
 
-                if width is not None:
-                    item.width = width
-                if height is not None:
-                    item.height = height
-
-                if sizing_mode is not None and _has_auto_sizing(item):
-                    item.sizing_mode = sizing_mode
-
+                _apply_grid_item_settings(item, sizing_mode, width, height)
                 items.append((item, y, x))
             elif isinstance(item, UIElement):
                 continue
             else:
                 raise ValueError("Only UIElement and LayoutDOM items can be inserted into a grid")
 
-    def merge(cls: type[Tool], group: list[Tool]) -> Tool | ToolProxy | None:
+    return toolbars, items
+
+
+def _apply_grid_item_settings(
+    item: LayoutDOM,
+    sizing_mode: SizingModeType | None,
+    width: int | None,
+    height: int | None,
+) -> None:
+    """Apply sizing settings to a grid item."""
+    if width is not None:
+        item.width = width
+    if height is not None:
+        item.height = height
+    if sizing_mode is not None and _has_auto_sizing(item):
+        item.sizing_mode = sizing_mode
+
+
+def _create_merged_toolbar(
+    toolbars: list[Toolbar],
+    toolbar_options: dict[ToolbarOptions, Any],
+    merge_tools: bool,
+) -> Toolbar:
+    """Create a merged toolbar from individual plot toolbars."""
+    def merge_single_tools(cls: type[Tool], group: list[Tool]) -> Tool | ToolProxy | None:
         if issubclass(cls, (SaveTool, CopyTool, ExamineTool, FullscreenTool)):
             return cls()
-        else:
-            return None
+        return None
 
+    tools = _collect_and_merge_tools(toolbars, merge_tools, merge_single_tools)
+    active_tool_settings = _extract_active_tool_settings(toolbars, tools)
+    toolbar_kwargs = _resolve_toolbar_options(toolbar_options, active_tool_settings, toolbars)
+
+    return Toolbar(tools=tools, **toolbar_kwargs)
+
+
+def _collect_and_merge_tools(
+    toolbars: list[Toolbar],
+    merge_tools: bool,
+    merge_func: Callable[[type[Tool], list[Tool]], Tool | ToolProxy | None],
+) -> list[Tool | ToolProxy]:
+    """Collect all tools from toolbars and optionally merge them."""
     tools: list[Tool | ToolProxy] = []
-
     for toolbar in toolbars:
         tools.extend(toolbar.tools)
 
     if merge_tools:
-        tools = group_tools(tools, merge=merge)
+        tools = group_tools(tools, merge=merge_func)
+    return tools
 
+
+def _extract_active_tool_settings(
+    toolbars: list[Toolbar],
+    merged_tools: list[Tool | ToolProxy],
+) -> dict[str, list[Any]]:
+    """Extract active tool settings from all toolbars, mapping to merged tools."""
     def map_to_proxy(active_tool: Tool | Literal["auto"] | None) -> ToolProxy | Tool:
         if isinstance(active_tool, Tool):
-            for tool_or_proxy in tools:
+            for tool_or_proxy in merged_tools:
                 if isinstance(tool_or_proxy, ToolProxy) and active_tool in tool_or_proxy.tools:
                     return tool_or_proxy
         return active_tool
 
-    logos = [ toolbar.logo for toolbar in toolbars ]
-    autohides = [ toolbar.autohide for toolbar in toolbars ]
-    active_drags = [ map_to_proxy(toolbar.active_drag) for toolbar in toolbars ]
-    active_inspects = [ map_to_proxy(toolbar.active_inspect) for toolbar in toolbars ] # TODO list[Tool]
-    active_scrolls = [ map_to_proxy(toolbar.active_scroll) for toolbar in toolbars ]
-    active_taps = [ map_to_proxy(toolbar.active_tap) for toolbar in toolbars ]
-    active_multis = [ map_to_proxy(toolbar.active_multi) for toolbar in toolbars ]
+    return {
+        "active_drag": [map_to_proxy(t.active_drag) for t in toolbars],
+        "active_inspect": [map_to_proxy(t.active_inspect) for t in toolbars],
+        "active_scroll": [map_to_proxy(t.active_scroll) for t in toolbars],
+        "active_tap": [map_to_proxy(t.active_tap) for t in toolbars],
+        "active_multi": [map_to_proxy(t.active_multi) for t in toolbars],
+    }
 
-    V = TypeVar("V")
-    def assert_unique(values: list[V], name: ToolbarOptions) -> V | UndefinedType:
+
+V = TypeVar("V")
+
+
+def _resolve_toolbar_options(
+    toolbar_options: dict[ToolbarOptions, Any],
+    active_settings: dict[str, list[Any]],
+    toolbars: list[Toolbar],
+) -> dict[str, Any]:
+    """Resolve all toolbar options, handling conflicts between multiple toolbars."""
+    def assert_unique(values: list[V], name: ToolbarOptions) -> V:
         if name in toolbar_options:
             return toolbar_options[name]
-        n = len(set(values))
+        n = len(set(str(v) for v in values))
         if n == 0:
             return Undefined
         elif n > 1:
             from .util.warnings import warn
-
             warn(f"found multiple competing values for 'toolbar.{name}' property; using the latest value")
         return values[-1]
 
-    logo = assert_unique(logos, "logo")
-    autohide = assert_unique(autohides, "autohide")
-    active_drag = assert_unique(active_drags, "active_drag")
-    active_inspect = assert_unique(active_inspects, "active_inspect")
-    active_scroll = assert_unique(active_scrolls, "active_scroll")
-    active_tap = assert_unique(active_taps, "active_tap")
-    active_multi = assert_unique(active_multis, "active_multi")
-
-    toolbar = Toolbar(
-        tools=tools,
-        logo=logo,
-        autohide=autohide,
-        active_drag=active_drag,
-        active_inspect=active_inspect,
-        active_scroll=active_scroll,
-        active_tap=active_tap,
-        active_multi=active_multi,
-    )
-
-    gp = GridPlot(
-        children=items,
-        toolbar=toolbar,
-        toolbar_location=toolbar_location,
-        sizing_mode=sizing_mode,
-    )
-
-    return gp
+    return {
+        "logo": assert_unique([t.logo for t in toolbars], "logo"),
+        "autohide": assert_unique([t.autohide for t in toolbars], "autohide"),
+        "active_drag": assert_unique(active_settings["active_drag"], "active_drag"),
+        "active_inspect": assert_unique(active_settings["active_inspect"], "active_inspect"),
+        "active_scroll": assert_unique(active_settings["active_scroll"], "active_scroll"),
+        "active_tap": assert_unique(active_settings["active_tap"], "active_tap"),
+        "active_multi": assert_unique(active_settings["active_multi"], "active_multi"),
+    }
 
 # XXX https://github.com/python/mypy/issues/731
 @overload

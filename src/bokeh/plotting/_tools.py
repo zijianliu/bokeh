@@ -71,61 +71,83 @@ ActiveScroll: TypeAlias = Scroll | Auto | str | None
 ActiveTap: TypeAlias = Tap | Auto | str | None
 ActiveMulti: TypeAlias = GestureTool | Auto | str | None
 
-def process_active_tools(toolbar: Toolbar, tool_map: dict[str, Tool],
-        active_drag: ActiveDrag, active_inspect: ActiveInspect, active_scroll: ActiveScroll,
-        active_tap: ActiveTap, active_multi: ActiveMulti) -> None:
-    """ Adds tools to the plot object
+def process_active_tools(
+    toolbar: Toolbar,
+    tool_map: dict[str, Tool],
+    active_drag: ActiveDrag,
+    active_inspect: ActiveInspect,
+    active_scroll: ActiveScroll,
+    active_tap: ActiveTap,
+    active_multi: ActiveMulti,
+) -> None:
+    """Configure active tool states on the toolbar.
 
     Args:
-        toolbar (Toolbar): instance of a Toolbar object
-        tool_map (dict[str]): tool_map from _process_tools_arg
-        active_drag (str, None, "auto" or Tool): the tool to set active for drag
-        active_inspect (str, None, "auto", Tool or Tool[]): the tool to set active for inspect
-        active_scroll (str, None, "auto" or Tool): the tool to set active for scroll
-        active_tap (str, None, "auto" or Tool): the tool to set active for tap
-        active_multi (str, None, "auto" or Tool): the tool to set active for tap
-
-    Returns:
-        None
+        toolbar: The Toolbar instance to configure
+        tool_map: Mapping from tool string names to Tool instances
+        active_drag: The active drag tool ("auto", None, Tool, or tool name)
+        active_inspect: The active inspect tool(s) ("auto", None, Tool, list of Tools, or tool name)
+        active_scroll: The active scroll tool ("auto", None, Tool, or tool name)
+        active_tap: The active tap tool ("auto", None, Tool, or tool name)
+        active_multi: The active multi-gesture tool ("auto", None, Tool, or tool name)
 
     Note:
-        This function sets properties on Toolbar
+        This function sets properties directly on the Toolbar instance.
     """
-    if active_drag in ["auto", None] or isinstance(active_drag, Tool):
-        toolbar.active_drag = cast(Any, active_drag)
-    elif active_drag in tool_map:
-        toolbar.active_drag = cast(Any, tool_map[active_drag])
-    else:
-        raise ValueError(f"Got unknown {active_drag!r} for 'active_drag', which was not a string supplied in 'tools' argument")
+    toolbar.active_drag = _resolve_active_tool(active_drag, tool_map, "active_drag")
+    toolbar.active_inspect = _resolve_active_inspect(active_inspect, tool_map)
+    toolbar.active_scroll = _resolve_active_tool(active_scroll, tool_map, "active_scroll")
+    toolbar.active_tap = _resolve_active_tool(active_tap, tool_map, "active_tap")
+    toolbar.active_multi = _resolve_active_tool(active_multi, tool_map, "active_multi")
 
-    if active_inspect in ["auto", None] or isinstance(active_inspect, Tool) or \
-            (isinstance(active_inspect, list) and all(isinstance(t, Tool) for t in active_inspect)):
-        toolbar.active_inspect = cast(Any, active_inspect)
-    elif isinstance(active_inspect, str) and active_inspect in tool_map:
-        toolbar.active_inspect = cast(Any, tool_map[active_inspect])
-    else:
-        raise ValueError(f"Got unknown {active_inspect!r} for 'active_inspect', which was not a string supplied in 'tools' argument")
 
-    if active_scroll in ["auto", None] or isinstance(active_scroll, Tool):
-        toolbar.active_scroll = cast(Any, active_scroll)
-    elif active_scroll in tool_map:
-        toolbar.active_scroll = cast(Any, tool_map[active_scroll])
-    else:
-        raise ValueError(f"Got unknown {active_scroll!r} for 'active_scroll', which was not a string supplied in 'tools' argument")
+def _resolve_active_tool(
+    active_value: ActiveDrag | ActiveScroll | ActiveTap | ActiveMulti,
+    tool_map: dict[str, Tool],
+    tool_type: str,
+) -> Any:
+    """Resolve an active tool value to a Tool instance or special value.
 
-    if active_tap in ["auto", None] or isinstance(active_tap, Tool):
-        toolbar.active_tap = cast(Any, active_tap)
-    elif active_tap in tool_map:
-        toolbar.active_tap = cast(Any, tool_map[active_tap])
-    else:
-        raise ValueError(f"Got unknown {active_tap!r} for 'active_tap', which was not a string supplied in 'tools' argument")
+    Args:
+        active_value: The value specifying the active tool
+        tool_map: Mapping from tool names to Tool instances
+        tool_type: Human-readable tool type name for error messages
 
-    if active_multi in ["auto", None] or isinstance(active_multi, Tool):
-        toolbar.active_multi = cast(Any, active_multi)
-    elif active_multi in tool_map:
-        toolbar.active_multi = cast(Any, tool_map[active_multi])
+    Returns:
+        The resolved Tool, "auto", or None
+
+    Raises:
+        ValueError: If the active_value is not recognized
+    """
+    if active_value in ["auto", None] or isinstance(active_value, Tool):
+        return active_value
+    elif isinstance(active_value, str) and active_value in tool_map:
+        return tool_map[active_value]
     else:
-        raise ValueError(f"Got unknown {active_multi!r} for 'active_multi', which was not a string supplied in 'tools' argument")
+        raise ValueError(
+            f"Got unknown {active_value!r} for '{tool_type}', "
+            "which was not a string supplied in 'tools' argument"
+        )
+
+
+def _resolve_active_inspect(
+    active_inspect: ActiveInspect,
+    tool_map: dict[str, Tool],
+) -> Any:
+    """Resolve the active inspect tool value.
+
+    Handles the special case where active_inspect can be a list of Tools.
+    """
+    if active_inspect in ["auto", None] or isinstance(active_inspect, Tool):
+        return active_inspect
+    if isinstance(active_inspect, list) and all(isinstance(t, Tool) for t in active_inspect):
+        return active_inspect
+    if isinstance(active_inspect, str) and active_inspect in tool_map:
+        return tool_map[active_inspect]
+    raise ValueError(
+        f"Got unknown {active_inspect!r} for 'active_inspect', "
+        "which was not a string supplied in 'tools' argument"
+    )
 
 def process_tools_arg(plot: Plot, tools: str | Sequence[Tool | str],
         tooltips: str | list[tuple[str, str]] | None = None) -> tuple[list[Tool], dict[str, Tool]]:

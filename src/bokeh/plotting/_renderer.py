@@ -79,66 +79,139 @@ def get_default_color(plot: Plot | None = None) -> str:
 #-----------------------------------------------------------------------------
 
 def create_renderer(glyphclass: type[Glyph], plot: Plot, **kwargs: Any) -> GlyphRenderer[Glyph]:
-    # convert data source, if necessary
-    is_user_source = _convert_data_source(kwargs)
-
-    # save off legend kwargs before we get going
+    # Prepare data source and extract renderer arguments
+    is_user_source = _prepare_data_source(kwargs)
     legend_kwarg, legend_name = pop_legend_kwarg(kwargs)
-
-    # need to check if user source is present before pop_renderer_args
     renderer_kws = _pop_renderer_args(kwargs)
     source = renderer_kws['data_source']
 
-    # handle the main glyph, need to process literals
-    glyph_visuals = pop_visuals(glyphclass, kwargs)
-    incompatible_literal_spec_values: list[str] = []
-    incompatible_literal_spec_values += _process_sequence_literals(glyphclass, kwargs, source, is_user_source)
-    incompatible_literal_spec_values += _process_sequence_literals(glyphclass, glyph_visuals, source, is_user_source)
-    if incompatible_literal_spec_values:
-        from ..util.strings import nice_join
+    # Process visual properties and sequence literals
+    glyph_visuals = _process_glyph_visuals(glyphclass, kwargs, source, is_user_source)
 
-        raise RuntimeError(_GLYPH_SOURCE_MSG % nice_join(incompatible_literal_spec_values, conjunction="and"))
+    # Create glyphs for different interaction states
+    glyphs = _create_state_glyphs(glyphclass, kwargs, glyph_visuals)
 
-    # handle the nonselection glyph, we always set one
-    nonselection_visuals = pop_visuals(glyphclass, kwargs, prefix='nonselection_', defaults=glyph_visuals, override_defaults={'alpha':0.1})
-
-    # handle the selection glyph, if any properties were given
-    if any(x.startswith('selection_') for x in kwargs):
-        selection_visuals = pop_visuals(glyphclass, kwargs, prefix='selection_', defaults=glyph_visuals)
-    else:
-        selection_visuals = None
-
-    # handle the hover glyph, if any properties were given
-    if any(x.startswith('hover_') for x in kwargs):
-        hover_visuals = pop_visuals(glyphclass, kwargs, prefix='hover_', defaults=glyph_visuals)
-    else:
-        hover_visuals = None
-
-    # handle the mute glyph, we always set one
-    muted_visuals = pop_visuals(glyphclass, kwargs, prefix='muted_', defaults=glyph_visuals, override_defaults={'alpha':0.2})
-
-    glyph = make_glyph(glyphclass, kwargs, glyph_visuals)
-    nonselection_glyph = make_glyph(glyphclass, kwargs, nonselection_visuals)
-    selection_glyph = make_glyph(glyphclass, kwargs, selection_visuals)
-    hover_glyph = make_glyph(glyphclass, kwargs, hover_visuals)
-    muted_glyph = make_glyph(glyphclass, kwargs, muted_visuals)
-
-    glyph_renderer = GlyphRenderer(
-        glyph=glyph,
-        nonselection_glyph=nonselection_glyph or "auto",
-        selection_glyph=selection_glyph or "auto",
-        hover_glyph=hover_glyph,
-        muted_glyph=muted_glyph or "auto",
-        **renderer_kws)
-
+    # Build and register the renderer
+    glyph_renderer = _build_renderer(renderer_kws, glyphs)
     plot.renderers.append(glyph_renderer)
 
+    # Update legend if needed (must be done after renderer is added)
     if legend_kwarg:
-        # It must be after the renderer is added because if it creates a new `LegendItem`,
-        # the referenced renderer must already be present.
         update_legend(plot, legend_kwarg, legend_name, glyph_renderer)
 
     return glyph_renderer
+
+
+def _prepare_data_source(kwargs: Attrs) -> bool:
+    """Convert data source to ColumnDataSource if necessary.
+
+    Returns:
+        True if user provided a source, False if auto-created.
+    """
+    return _convert_data_source(kwargs)
+
+
+def _process_glyph_visuals(
+    glyphclass: type[Glyph],
+    kwargs: Attrs,
+    source: ColumnDataSource,
+    is_user_source: bool,
+) -> Attrs:
+    """Process visual properties and validate sequence literals.
+
+    Returns:
+        Dictionary of main glyph visual properties.
+    """
+    glyph_visuals = pop_visuals(glyphclass, kwargs)
+
+    incompatible: list[str] = []
+    incompatible += _process_sequence_literals(glyphclass, kwargs, source, is_user_source)
+    incompatible += _process_sequence_literals(glyphclass, glyph_visuals, source, is_user_source)
+
+    if incompatible:
+        from ..util.strings import nice_join
+        raise RuntimeError(_GLYPH_SOURCE_MSG % nice_join(incompatible, conjunction="and"))
+
+    return glyph_visuals
+
+
+def _create_state_glyphs(
+    glyphclass: type[Glyph],
+    kwargs: Attrs,
+    glyph_visuals: Attrs,
+) -> dict[str, Glyph | None]:
+    """Create glyphs for all interaction states (main, nonselection, selection, hover, muted).
+
+    Returns:
+        Dictionary mapping state names to glyph instances.
+    """
+    # Main glyph
+    main_glyph = make_glyph(glyphclass, kwargs, glyph_visuals)
+
+    # Nonselection glyph (always created with reduced alpha)
+    nonselection_visuals = pop_visuals(
+        glyphclass, kwargs,
+        prefix='nonselection_',
+        defaults=glyph_visuals,
+        override_defaults={'alpha': 0.1},
+    )
+    nonselection_glyph = make_glyph(glyphclass, kwargs, nonselection_visuals)
+
+    # Selection glyph (only if selection_ properties provided)
+    selection_visuals = _get_state_visuals(
+        glyphclass, kwargs, glyph_visuals, 'selection_',
+    )
+    selection_glyph = make_glyph(glyphclass, kwargs, selection_visuals)
+
+    # Hover glyph (only if hover_ properties provided)
+    hover_visuals = _get_state_visuals(
+        glyphclass, kwargs, glyph_visuals, 'hover_',
+    )
+    hover_glyph = make_glyph(glyphclass, kwargs, hover_visuals)
+
+    # Muted glyph (always created with reduced alpha)
+    muted_visuals = pop_visuals(
+        glyphclass, kwargs,
+        prefix='muted_',
+        defaults=glyph_visuals,
+        override_defaults={'alpha': 0.2},
+    )
+    muted_glyph = make_glyph(glyphclass, kwargs, muted_visuals)
+
+    return {
+        'main': main_glyph,
+        'nonselection': nonselection_glyph,
+        'selection': selection_glyph,
+        'hover': hover_glyph,
+        'muted': muted_glyph,
+    }
+
+
+def _get_state_visuals(
+    glyphclass: type[Glyph],
+    kwargs: Attrs,
+    defaults: Attrs,
+    prefix: str,
+) -> Attrs | None:
+    """Extract visual properties for a specific state if any are provided."""
+    if any(x.startswith(prefix) for x in kwargs):
+        return pop_visuals(glyphclass, kwargs, prefix=prefix, defaults=defaults)
+    return None
+
+
+def _build_renderer(
+    renderer_kws: Attrs,
+    glyphs: dict[str, Glyph | None],
+) -> GlyphRenderer:
+    """Build the GlyphRenderer from processed arguments and glyphs."""
+    return GlyphRenderer(
+        glyph=glyphs['main'],
+        nonselection_glyph=glyphs['nonselection'] or "auto",
+        selection_glyph=glyphs['selection'] or "auto",
+        hover_glyph=glyphs['hover'],
+        muted_glyph=glyphs['muted'] or "auto",
+        **renderer_kws,
+    )
 
 def make_glyph(glyphclass: type[Glyph], kws: Attrs, extra: Attrs | None) -> Glyph | None:
     if extra is None:
