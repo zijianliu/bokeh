@@ -35,10 +35,6 @@ export namespace MonthsTicker {
 
   export type Props = BaseSingleIntervalTicker.Props & {
     months: p.Property<number[]>
-  } & Internal
-
-  export type Internal = {
-    interval: p.Property<number>
   }
 }
 
@@ -55,13 +51,11 @@ export class MonthsTicker extends BaseSingleIntervalTicker {
     this.define<MonthsTicker.Props>(({Int, List}) => ({
       months: [ List(Int), [] ],
     }))
+  }
 
-    this.internal<MonthsTicker.Internal, MonthsTicker>(({Float}) => ({
-      interval: [ Float, (obj) => { // TODO computed property of months
-        const {months} = obj
-        return (months.length > 1 ? months[1] - months[0] : 12)*ONE_MONTH
-      } ],
-    }))
+  override get interval(): number {
+    const {months} = this
+    return (months.length > 1 ? months[1] - months[0] : 12)*ONE_MONTH
   }
 
   override get_ticks_no_defaults(data_low: number, data_high: number, _cross_loc: number, _desired_n_ticks: number): TickSpec<number> {

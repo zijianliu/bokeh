@@ -26,11 +26,11 @@ export abstract class BaseSingleIntervalTicker extends ContinuousTicker {
   }
 
   get_min_interval(): number {
-    return this.interval
+    return this.interval ?? 0
   }
 
   get_max_interval(): number {
-    return this.interval
+    return this.interval ?? Infinity
   }
 }
 
