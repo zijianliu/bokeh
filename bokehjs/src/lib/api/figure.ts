@@ -221,25 +221,10 @@ export class Figure extends BaseFigure {
   constructor(attrs: Partial<Figure.Attrs> = {}) {
     attrs = {...attrs}
 
-    const x_axis_type = attrs.x_axis_type === undefined ? "auto" : attrs.x_axis_type
-    const y_axis_type = attrs.y_axis_type === undefined ? "auto" : attrs.y_axis_type
-    delete attrs.x_axis_type
-    delete attrs.y_axis_type
-
-    const x_minor_ticks = attrs.x_minor_ticks ?? "auto"
-    const y_minor_ticks = attrs.y_minor_ticks ?? "auto"
-    delete attrs.x_minor_ticks
-    delete attrs.y_minor_ticks
-
-    const x_axis_location = attrs.x_axis_location === undefined ? "below" : attrs.x_axis_location
-    const y_axis_location = attrs.y_axis_location === undefined ? "left"  : attrs.y_axis_location
-    delete attrs.x_axis_location
-    delete attrs.y_axis_location
-
-    const x_axis_label = attrs.x_axis_label ?? ""
-    const y_axis_label = attrs.y_axis_label ?? ""
-    delete attrs.x_axis_label
-    delete attrs.y_axis_label
+    const {x_axis_type, y_axis_type} = _extract_axis_types(attrs)
+    const {x_minor_ticks, y_minor_ticks} = _extract_minor_ticks(attrs)
+    const {x_axis_location, y_axis_location} = _extract_axis_locations(attrs)
+    const {x_axis_label, y_axis_label} = _extract_axis_labels(attrs)
 
     const x_range = Figure._get_range(attrs.x_range)
     const y_range = Figure._get_range(attrs.y_range)
@@ -251,102 +236,16 @@ export class Figure extends BaseFigure {
     delete attrs.x_scale
     delete attrs.y_scale
 
-    const {
-      active_drag,
-      active_inspect,
-      active_scroll,
-      active_tap,
-      active_multi,
-    } = attrs
-
-    delete attrs.active_drag
-    delete attrs.active_inspect
-    delete attrs.active_scroll
-    delete attrs.active_tap
-    delete attrs.active_multi
-
-    const tools = (() => {
-      const {tools, toolbar} = attrs
-      if (tools != null) {
-        if (toolbar != null) {
-          throw new Error("'tools' and 'toolbar' can't be used together")
-        } else {
-          delete attrs.tools
-
-          if (isString(tools)) {
-            return tools.split(",").map((s) => s.trim()).filter((s) => s.length > 0) as (keyof ToolAliases)[]
-          } else {
-            return tools
-          }
-        }
-      } else {
-        return toolbar != null ? null : _default_tools
-      }
-    })()
+    const active_tools = _extract_active_tools(attrs)
+    const tools = _resolve_tools_input(attrs)
 
     super({...attrs, x_range, y_range, x_scale, y_scale})
 
     this._process_axis_and_grid(x_axis_type, x_axis_location, x_minor_ticks, x_axis_label, x_range, 0)
     this._process_axis_and_grid(y_axis_type, y_axis_location, y_minor_ticks, y_axis_label, y_range, 1)
 
-    const tool_map = new Map<string, Tool>()
-    if (tools != null) {
-      const resolved_tools = tools.map((tool) => {
-        if (tool instanceof Tool) {
-          return tool
-        } else {
-          const resolved_tool = Tool.from_string(tool)
-          tool_map.set(tool, resolved_tool)
-          return resolved_tool
-        }
-      })
-      this.add_tools(...resolved_tools)
-    }
-
-    if (isString(active_drag) && active_drag != "auto") {
-      const tool = tool_map.get(active_drag)
-      if (tool instanceof GestureTool || tool instanceof ToolProxy) {
-        this.toolbar.active_drag = tool
-      }
-    } else if (active_drag !== undefined) {
-      this.toolbar.active_drag = active_drag
-    }
-
-    if (isString(active_inspect) && active_inspect != "auto") {
-      const tool = tool_map.get(active_inspect)
-      if (tool != null) {
-        this.toolbar.active_inspect = tool
-      }
-    } else if (active_inspect !== undefined) {
-      this.toolbar.active_inspect = active_inspect
-    }
-
-    if (isString(active_scroll) && active_scroll != "auto") {
-      const tool = tool_map.get(active_scroll)
-      if (tool instanceof GestureTool || tool instanceof ToolProxy) {
-        this.toolbar.active_scroll = tool
-      }
-    } else if (active_scroll !== undefined) {
-      this.toolbar.active_scroll = active_scroll
-    }
-
-    if (isString(active_tap) && active_tap != "auto") {
-      const tool = tool_map.get(active_tap)
-      if (tool instanceof GestureTool || tool instanceof ToolProxy) {
-        this.toolbar.active_tap = tool
-      }
-    } else if (active_tap !== undefined) {
-      this.toolbar.active_tap = active_tap
-    }
-
-    if (isString(active_multi) && active_multi != "auto") {
-      const tool = tool_map.get(active_multi)
-      if (tool instanceof GestureTool || tool instanceof ToolProxy) {
-        this.toolbar.active_multi = tool
-      }
-    } else if (active_multi !== undefined) {
-      this.toolbar.active_multi = active_multi
-    }
+    const tool_map = _add_tools_from_input(this, tools)
+    _configure_active_tools(this.toolbar, tool_map, active_tools)
   }
 
   get coordinates(): CoordinateMapping | null {
@@ -812,4 +711,121 @@ export class Figure extends BaseFigure {
 
 export function figure(attributes?: Partial<Figure.Attrs>): Figure {
   return new Figure(attributes)
+}
+
+type ActiveToolsConfig = {
+  active_drag: Toolbar.Attrs["active_drag"] | string | undefined
+  active_inspect: Toolbar.Attrs["active_inspect"] | string | undefined
+  active_scroll: Toolbar.Attrs["active_scroll"] | string | undefined
+  active_tap: Toolbar.Attrs["active_tap"] | string | undefined
+  active_multi: Toolbar.Attrs["active_multi"] | string | undefined
+}
+
+function _extract_axis_types(attrs: Partial<Figure.Attrs>): {x_axis_type: AxisType, y_axis_type: AxisType} {
+  const x_axis_type = attrs.x_axis_type === undefined ? "auto" : attrs.x_axis_type
+  const y_axis_type = attrs.y_axis_type === undefined ? "auto" : attrs.y_axis_type
+  delete attrs.x_axis_type
+  delete attrs.y_axis_type
+  return {x_axis_type, y_axis_type}
+}
+
+function _extract_minor_ticks(attrs: Partial<Figure.Attrs>): {x_minor_ticks: number | "auto", y_minor_ticks: number | "auto"} {
+  const x_minor_ticks = attrs.x_minor_ticks ?? "auto"
+  const y_minor_ticks = attrs.y_minor_ticks ?? "auto"
+  delete attrs.x_minor_ticks
+  delete attrs.y_minor_ticks
+  return {x_minor_ticks, y_minor_ticks}
+}
+
+function _extract_axis_locations(attrs: Partial<Figure.Attrs>): {x_axis_location: AxisLocation, y_axis_location: AxisLocation} {
+  const x_axis_location = attrs.x_axis_location === undefined ? "below" : attrs.x_axis_location
+  const y_axis_location = attrs.y_axis_location === undefined ? "left" : attrs.y_axis_location
+  delete attrs.x_axis_location
+  delete attrs.y_axis_location
+  return {x_axis_location, y_axis_location}
+}
+
+function _extract_axis_labels(attrs: Partial<Figure.Attrs>): {x_axis_label: Axis["axis_label"], y_axis_label: Axis["axis_label"]} {
+  const x_axis_label = attrs.x_axis_label ?? ""
+  const y_axis_label = attrs.y_axis_label ?? ""
+  delete attrs.x_axis_label
+  delete attrs.y_axis_label
+  return {x_axis_label, y_axis_label}
+}
+
+function _extract_active_tools(attrs: Partial<Figure.Attrs>): ActiveToolsConfig {
+  const active_tools: ActiveToolsConfig = {
+    active_drag: attrs.active_drag,
+    active_inspect: attrs.active_inspect,
+    active_scroll: attrs.active_scroll,
+    active_tap: attrs.active_tap,
+    active_multi: attrs.active_multi,
+  }
+  delete attrs.active_drag
+  delete attrs.active_inspect
+  delete attrs.active_scroll
+  delete attrs.active_tap
+  delete attrs.active_multi
+  return active_tools
+}
+
+function _resolve_tools_input(attrs: Partial<Figure.Attrs>): (Tool | ToolName)[] | null {
+  const {tools, toolbar} = attrs
+  if (tools != null) {
+    if (toolbar != null) {
+      throw new Error("'tools' and 'toolbar' can't be used together")
+    }
+    delete attrs.tools
+    if (isString(tools)) {
+      return tools.split(",").map((s) => s.trim()).filter((s) => s.length > 0) as (keyof ToolAliases)[]
+    }
+    return tools
+  }
+  return toolbar != null ? null : _default_tools
+}
+
+function _add_tools_from_input(figure: Figure, tools: (Tool | ToolName)[] | null): Map<string, Tool> {
+  const tool_map = new Map<string, Tool>()
+  if (tools != null) {
+    const resolved_tools = tools.map((tool) => {
+      if (tool instanceof Tool) {
+        return tool
+      } else {
+        const resolved_tool = Tool.from_string(tool)
+        tool_map.set(tool, resolved_tool)
+        return resolved_tool
+      }
+    })
+    figure.add_tools(...resolved_tools)
+  }
+  return tool_map
+}
+
+function _configure_active_tool(
+  toolbar: Toolbar,
+  tool_map: Map<string, Tool>,
+  active_tool: unknown,
+  property: "active_drag" | "active_inspect" | "active_scroll" | "active_tap" | "active_multi",
+): void {
+  if (active_tool === undefined) {
+    return
+  }
+  if (isString(active_tool) && active_tool != "auto") {
+    const tool = tool_map.get(active_tool)
+    if (tool instanceof GestureTool || tool instanceof ToolProxy) {
+      (toolbar as any)[property] = tool
+    } else if (tool != null) {
+      (toolbar as any)[property] = tool
+    }
+  } else {
+    (toolbar as any)[property] = active_tool
+  }
+}
+
+function _configure_active_tools(toolbar: Toolbar, tool_map: Map<string, Tool>, active_tools: ActiveToolsConfig): void {
+  _configure_active_tool(toolbar, tool_map, active_tools.active_drag, "active_drag")
+  _configure_active_tool(toolbar, tool_map, active_tools.active_inspect, "active_inspect")
+  _configure_active_tool(toolbar, tool_map, active_tools.active_scroll, "active_scroll")
+  _configure_active_tool(toolbar, tool_map, active_tools.active_tap, "active_tap")
+  _configure_active_tool(toolbar, tool_map, active_tools.active_multi, "active_multi")
 }
