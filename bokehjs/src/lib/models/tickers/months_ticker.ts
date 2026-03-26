@@ -58,7 +58,12 @@ export class MonthsTicker extends BaseSingleIntervalTicker {
 
     this.internal<MonthsTicker.Internal, MonthsTicker>(({Float}) => ({
       interval: [ Float, (obj) => { // TODO computed property of months
-        const {months} = obj
+        // Access months safely to avoid UnsetValueError which can occur during
+        // deserialization when properties are not fully initialized yet.
+        // Use is_unset getter to check if the value has been initialized, since
+        // _value may be set directly from JSON before the property is marked as initialized.
+        const monthsProp = obj.properties.months
+        const months = !monthsProp.is_unset ? (monthsProp as any)._value : []
         return (months.length > 1 ? months[1] - months[0] : 12)*ONE_MONTH
       } ],
     }))
