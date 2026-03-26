@@ -38,10 +38,6 @@ export namespace DaysTicker {
 
   export type Props = BaseSingleIntervalTicker.Props & {
     days: p.Property<number[]>
-  } & Internal
-
-  export type Internal = {
-    interval: p.Property<number>
   }
 }
 
@@ -59,16 +55,14 @@ export class DaysTicker extends BaseSingleIntervalTicker {
       days: [ List(Int), [] ],
     }))
 
-    this.internal<DaysTicker.Internal, DaysTicker>(({Float}) => ({
-      interval: [ Float, (obj) => { // TODO computed property of days
-        const {days} = obj
-        return (days.length > 1 ? days[1] - days[0] : 31)*ONE_DAY
-      } ],
-    }))
-
     this.override<DaysTicker.Props>({
       num_minor_ticks: 0,
     })
+  }
+
+  override get interval(): number {
+    const {days} = this
+    return (days.length > 1 ? days[1] - days[0] : 31)*ONE_DAY
   }
 
   override get_ticks_no_defaults(data_low: number, data_high: number, _cross_loc: number, _desired_n_ticks: number): TickSpec<number> {

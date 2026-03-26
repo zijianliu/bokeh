@@ -80,6 +80,11 @@ export class CompositeTicker extends ContinuousTicker {
       best_ticker = this.tickers[best_ticker_ndx]
     }
 
+    // Ensure we always return a valid ticker, falling back to the first ticker if needed
+    if (best_ticker == null) {
+      best_ticker = this.tickers[0]
+    }
+
     return best_ticker
   }
 
