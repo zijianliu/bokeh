@@ -61,7 +61,12 @@ export class DaysTicker extends BaseSingleIntervalTicker {
 
     this.internal<DaysTicker.Internal, DaysTicker>(({Float}) => ({
       interval: [ Float, (obj) => { // TODO computed property of days
-        const {days} = obj
+        // Access days safely to avoid UnsetValueError which can occur during
+        // deserialization when properties are not fully initialized yet.
+        // Use is_unset getter to check if the value has been initialized, since
+        // _value may be set directly from JSON before the property is marked as initialized.
+        const daysProp = obj.properties.days
+        const days = !daysProp.is_unset ? (daysProp as any)._value : []
         return (days.length > 1 ? days[1] - days[0] : 31)*ONE_DAY
       } ],
     }))

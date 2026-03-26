@@ -378,7 +378,8 @@ export abstract class HasProps extends Signalable() implements Equatable, Printa
     const visited = new Set<string>()
     for (const prop of this) {
       const val = vals_proxy.get(prop.attr)
-      prop.initialize(val)
+      // If value is not in the dict, pass unset to trigger default_value computation
+      prop.initialize(vals_proxy.has(prop.attr) ? val : p.unset)
       visited.add(prop.attr)
     }
 
