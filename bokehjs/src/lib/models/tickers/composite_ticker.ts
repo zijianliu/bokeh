@@ -2,6 +2,7 @@ import type {TickSpec} from "./ticker"
 import {ContinuousTicker} from "./continuous_ticker"
 import type * as p from "core/properties"
 import {argmin, sorted_index, is_empty} from "core/util/array"
+import {clamp} from "core/util/math"
 
 // This Ticker takes a collection of Tickers and picks the one most appropriate
 // for a given range.
@@ -52,32 +53,51 @@ export class CompositeTicker extends ContinuousTicker {
 
   get_best_ticker(data_low: number, data_high: number, desired_n_ticks: number): ContinuousTicker {
     const data_range = data_high - data_low
+    console.log("get_best_ticker called:", {data_low, data_high, desired_n_ticks, data_range})
+    console.log("this.tickers:", this.tickers)
+    console.log("this.tickers.length:", this.tickers?.length)
+    
     if (data_range == 0) {
       return this.tickers[0]
     }
 
     const ideal_interval = this.get_ideal_interval(data_low, data_high, desired_n_ticks)
+    console.log("ideal_interval:", ideal_interval)
+    
+    console.log("this.min_intervals:", this.min_intervals)
+    console.log("this.max_intervals:", this.max_intervals)
+    
+    const n_tickers = this.tickers.length
     const ticker_ndxs = [
-      sorted_index(this.min_intervals, ideal_interval) - 1,
-      sorted_index(this.max_intervals, ideal_interval),
+      clamp(sorted_index(this.min_intervals, ideal_interval) - 1, 0, n_tickers - 1),
+      clamp(sorted_index(this.max_intervals, ideal_interval), 0, n_tickers - 1),
     ]
+    console.log("ticker_ndxs:", ticker_ndxs)
+    
     const intervals = [
       this.min_intervals[ticker_ndxs[0]],
       this.max_intervals[ticker_ndxs[1]],
     ]
+    console.log("intervals:", intervals)
+    
     const errors = intervals.map((interval) => {
       return Math.abs(desired_n_ticks - (data_range / interval))
     })
+    console.log("errors:", errors)
 
     let best_ticker
 
     if (is_empty(errors.filter((e) => !isNaN(e)))) {
       // this can happen if the data isn't loaded yet, we just default to the first scale
+      console.log("All errors are NaN, defaulting to first ticker")
       best_ticker = this.tickers[0]
     } else {
       const best_index = argmin(errors)
+      console.log("best_index:", best_index)
       const best_ticker_ndx = ticker_ndxs[best_index]
+      console.log("best_ticker_ndx:", best_ticker_ndx)
       best_ticker = this.tickers[best_ticker_ndx]
+      console.log("best_ticker:", best_ticker)
     }
 
     return best_ticker
